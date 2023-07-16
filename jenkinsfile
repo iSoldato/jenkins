@@ -1,0 +1,80 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Clone Repo') {
+            steps {
+                // Клонируем Git-репозиторий
+                git branch: 'main', url: 'https://github.com/iSoldato/jenkins.git'
+            }
+        }
+
+        stage('Build Docker Container') {
+            steps {
+                // Собираем контейнер с использованием Dockerfile из репозитория
+                script {
+                    docker.build("nginx", "-f Dockerfile .")
+                }
+            }
+        }
+
+        stage("Run Docker Container") {
+            steps {
+                script {
+                    // Проверяем наличие контейнера с именем nginx
+                    def existingContainer = sh(returnStdout: true, script: 'docker ps -aq --filter name=nginx').trim()
+                    if (existingContainer) {
+                        // Удаляем существующий контейнер
+                        sh "docker rm -f ${existingContainer}"
+                    }
+
+                    def containerId = sh(returnStdout: true, script: 'docker run -d -p 9889:80 --name nginx nginx').trim()
+                    if (containerId) {
+                        // Ожидаем, пока контейнер станет доступным
+                        sh 'sleep 20'
+
+                        // Проверяем код ответа при HTTP-запросе к контейнеру
+                        def responseCode = sh(returnStdout: true, script: 'curl -o /dev/null -s -w "%{http_code}" http://localhost:9889/').trim()
+                        if (responseCode != '200') {
+                            // Отправляем оповещение об ошибке в Telegram
+                            sendNotification('Ошибка: код ответа ' + responseCode)
+                        } else {
+                            // Получаем MD5-сумму измененного файла
+                            def modifiedMd5Sum = sh(returnStdout: true, script: 'md5sum index.html').trim().split(' ')[0]
+
+                            // Получаем MD5-сумму файла, отдаваемого nginx
+                            def nginxMd5Sum = sh(returnStdout: true, script: 'curl -s http://localhost:9889/ | md5sum').trim().split(' ')[0]
+
+                            // Сравниваем MD5-суммы файлов
+                            if (modifiedMd5Sum != nginxMd5Sum) {
+                                // Отправляем оповещение об ошибке в Telegram
+                                sendNotification('Ошибка: MD5-суммы файлов не совпадают')
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Проверяем наличие контейнера перед его удалением
+            script {
+                def containerId = sh(returnStdout: true, script: 'docker ps -a -q --filter name=nginx').trim()
+                if (containerId) {
+                    // Удаляем контейнер
+                    sh 'docker rm -f ' + containerId
+                }
+            }
+        }
+    }
+}
+def sendNotification(message) {
+    // Отправка оповещения в Telegram
+    telegramSend(
+        message: message,
+        chatId: '934521333',
+        credentialsId: 'my_credentials_id'
+    )
+}
